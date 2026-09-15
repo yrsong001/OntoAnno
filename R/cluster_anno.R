@@ -457,12 +457,13 @@ summarize_gptcelltype <- function(markers, model = 'gpt-5', tissue_name = "", n_
       } else { "" },
       .groups = 'drop'
     )
-  return(list(
+  out <- list(
     combined_results = combined_results,
     summary = summary,
     final_summary = final_summary,
     run_summary = run_summary
-  ))
+  )
+  flag_mixed_predictions(out)
 }
 
 
