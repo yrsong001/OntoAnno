@@ -137,7 +137,8 @@
 #' Query LLM for Cell Type Annotation Using Marker Genes
 #'
 #' Calls an LLM to predict cell types for each cluster or subcluster using marker genes.
-#' Supports multiple providers (OpenAI, Anthropic, Gemini, Ollama, and vLLM) via the ellmer package.
+#' Supports multiple providers (OpenAI, Anthropic, Gemini, Ollama, and vLLM) via the ellmer package,
+#' plus the Claude Code and Codex CLIs in headless mode (providers "claude_cli" / "codex_cli").
 #' For each cluster, marker genes are first ranked by avg_log2FC, and the top genes are selected.
 #' The prompt can optionally include a request for Cell Ontology prediction, restriction to a set of cell types,
 #' and/or an explicit instruction to predict a child cell type of a parent.
