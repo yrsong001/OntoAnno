@@ -157,7 +157,9 @@ call_llm <- function(prompt, provider = "openai", model = NULL,
   } else if (provider %in% c("claude_cli", "codex_cli")) {
     # Official headless modes of the Claude Code and Codex CLIs: no HTTP API, no key;
     # the CLI's own login is used. `params` are ignored (the CLIs expose no sampling
-    # controls); `system_prompt` is passed via --append-system-prompt (claude) or
+    # controls beyond what the CLI exposes: for these providers `params` is a character vector of
+    # extra CLI arguments, e.g. c("--effort", "high") or c("-c", "model_reasoning_effort=high"));
+    # `system_prompt` is passed via --append-system-prompt (claude) or
     # prepended to the prompt (codex). The chat object mimics ellmer's `$chat()`.
     bin <- if (!is.null(api_url)) api_url else if (provider == "claude_cli") "claude" else "codex"
     if (!nzchar(Sys.which(bin)) && !file.exists(bin)) {
@@ -168,6 +170,7 @@ call_llm <- function(prompt, provider = "openai", model = NULL,
         args <- c("-p", "--output-format", "text", "--no-session-persistence")
         if (!is.null(model)) args <- c(args, "--model", model)
         if (!is.null(system_prompt)) args <- c(args, "--append-system-prompt", shQuote(system_prompt))
+        if (is.character(params)) args <- c(args, params)   # e.g. c("--effort", "high")
         out <- withCallingHandlers(
           system2(bin, args, input = p, stdout = TRUE, stderr = TRUE),
           warning = function(w) invokeRestart("muffleWarning"))
@@ -176,6 +179,7 @@ call_llm <- function(prompt, provider = "openai", model = NULL,
         on.exit(unlink(outfile), add = TRUE)
         args <- c("exec", "--skip-git-repo-check", "-s", "read-only", "-o", outfile)
         if (!is.null(model)) args <- c(args, "-m", model)
+        if (is.character(params)) args <- c(args, params)   # e.g. c("-c", "model_reasoning_effort=high")
         full <- if (is.null(system_prompt)) p else paste(system_prompt, p, sep = "\n\n")
         withCallingHandlers(
           system2(bin, args, input = full, stdout = FALSE, stderr = FALSE),
