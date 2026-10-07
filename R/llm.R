@@ -166,6 +166,12 @@ call_llm <- function(prompt, provider = "openai", model = NULL,
       stop("CLI binary not found: ", bin, ". Pass its path via llm_config$api_url.")
     }
     chat <- list(chat = function(p) {
+      # Fresh, empty working directory for every call: headless `claude -p` auto-loads the
+      # CLAUDE.md and the per-directory auto-memory of its cwd (and `codex exec` reads
+      # AGENTS.md), so a call made from a project directory would see earlier project notes
+      # (e.g. previous annotations). An empty temp dir has neither; each call is independent.
+      wd <- tempfile("llm_cli_"); dir.create(wd); od <- setwd(wd)
+      on.exit({ setwd(od); unlink(wd, recursive = TRUE) }, add = TRUE)
       if (provider == "claude_cli") {
         args <- c("-p", "--output-format", "text", "--no-session-persistence")
         if (!is.null(model)) args <- c(args, "--model", model)
