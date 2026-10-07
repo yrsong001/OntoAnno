@@ -34,7 +34,7 @@
   unname(trimws(res_tmp[!is_header_line]))
 }
 
-.normalize_marker_input <- function(input, topgenenumber) {
+.normalize_marker_input <- function(input, topgenenumber, min_log2fc = 1) {
   if (is.list(input) && !is.data.frame(input)) {
     collapsed <- vapply(input, function(x) {
       if (length(x) == 0) {
@@ -47,7 +47,7 @@
       names(collapsed) <- as.character(seq_along(collapsed))
     }
   } else {
-    filtered <- input[input$avg_log2FC > 1, , drop = FALSE]
+    filtered <- if (is.null(min_log2fc)) input else input[input$avg_log2FC > min_log2fc, , drop = FALSE]
     split_genes <- split(filtered$gene, filtered$cluster, drop = FALSE)
 
     collapsed <- vapply(split_genes, function(genes) {
@@ -139,7 +139,8 @@
 #' Calls an LLM to predict cell types for each cluster or subcluster using marker genes.
 #' Supports multiple providers (OpenAI, Anthropic, Gemini, Ollama, and vLLM) via the ellmer package,
 #' plus the Claude Code and Codex CLIs in headless mode (providers "claude_cli" / "codex_cli").
-#' For each cluster, marker genes are first ranked by avg_log2FC, and the top genes are selected.
+#' For each cluster, the top genes are taken in the order of the marker table (Seurat FindAllMarkers order: adjusted
+#' p-value, then fold change), after an optional fold-change filter (`min_log2fc`, default avg_log2FC > 1).
 #' The prompt can optionally include a request for Cell Ontology prediction, restriction to a set of cell types,
 #' and/or an explicit instruction to predict a child cell type of a parent.
 #'
@@ -152,6 +153,8 @@
 #' @param parent_celltype Optional character. Predict child cell type of this parent.
 #' @param llm_config Optional list. LLM configuration with provider, model, params, api_key,
 #'   system_prompt, and provider-specific fields. Overrides `model` when supplied.
+#' @param min_log2fc Numeric or NULL. Minimum avg_log2FC for a marker to be used (default 1, i.e. more than two-fold);
+#'   NULL disables the filter. Ignored when `input` is already a list of genes per cluster.
 #'
 #' @return A named character vector of predicted cell types for each cluster.
 #' @importFrom ellmer params
@@ -159,12 +162,12 @@
 #' @export
 gptcelltype <- function(input, tissue_name = NULL, model = 'gpt-5', topgenenumber = 10,
                         add_cl_prompt = FALSE, restrict_to = NULL, parent_celltype = NULL,
-                        llm_config = NULL) {
+                        llm_config = NULL, min_log2fc = 1) {
   # Prepare LLM configuration
   config <- prepare_config(model = model, llm_config = llm_config)
 
   # Normalize input to named character vector of markers per cluster
-  normalized_input <- .normalize_marker_input(input, topgenenumber = topgenenumber)
+  normalized_input <- .normalize_marker_input(input, topgenenumber = topgenenumber, min_log2fc = min_log2fc)
   input <- normalized_input$all_input
   valid_input <- normalized_input$valid_input
   failure_notes <- character(0)
@@ -338,6 +341,9 @@ gptcelltype <- function(input, tissue_name = NULL, model = 'gpt-5', topgenenumbe
 #' @param parent_celltype Optional character. Predict child cell type of this parent.
 #' @param llm_config Optional list. LLM configuration passed to gptcelltype.
 #'   Supports OpenAI, Anthropic, and Google Gemini providers.
+#' @param min_log2fc Numeric or NULL. Minimum avg_log2FC a marker must exceed to be sent to the LLM (default 1, i.e. more than
+#'   two-fold). NULL disables the fold-change filter: the top genes are taken in the order of the marker table (Seurat's
+#'   FindAllMarkers order: adjusted p-value, then fold change).
 #'
 #' @return List with: \itemize{
 #'   \item combined_results: raw predictions from successful runs,
@@ -351,7 +357,7 @@ gptcelltype <- function(input, tissue_name = NULL, model = 'gpt-5', topgenenumbe
 #' @export
 summarize_gptcelltype <- function(markers, model = 'gpt-5', tissue_name = "", n_runs = 2, topgenenumber = 10,
                                   add_cl_prompt = FALSE, restrict_to = NULL, parent_celltype = NULL,
-                                  llm_config = NULL) {
+                                  llm_config = NULL, min_log2fc = 1) {
   results_list <- vector("list", n_runs)
   successful_run_ids <- character(0)
   run_summary_rows <- list()
@@ -366,7 +372,8 @@ summarize_gptcelltype <- function(markers, model = 'gpt-5', tissue_name = "", n_
       add_cl_prompt = add_cl_prompt,
       restrict_to = restrict_to,
       parent_celltype = parent_celltype,
-      llm_config = llm_config
+      llm_config = llm_config,
+      min_log2fc = min_log2fc
     )
     run_failed <- length(res) > 0 && all(.is_unknown_prediction_label(res))
 
@@ -494,6 +501,9 @@ summarize_gptcelltype <- function(markers, model = 'gpt-5', tissue_name = "", n_
 #'   Only used if save_plots = TRUE.
 #' @param llm_config Optional list. LLM configuration passed to summarize_gptcelltype.
 #'   Supports OpenAI, Anthropic, and Google Gemini providers.
+#' @param min_log2fc Numeric or NULL. Minimum avg_log2FC a marker must exceed to be sent to the LLM (default 1, i.e. more than
+#'   two-fold). NULL disables the fold-change filter: the top genes are taken in the order of the marker table (Seurat's
+#'   FindAllMarkers order: adjusted p-value, then fold change).
 #'
 #' @return A named list of annotation summary objects for each resolution.
 #' @importFrom dplyr arrange
@@ -512,7 +522,8 @@ ontoanno <- function(seurat_obj, resolutions, cl, graph,
                     marker_dir = "output/marker_genes",
                     save_plots = FALSE,
                     plot_dir = "./output/prediction",
-                    llm_config = NULL) {
+                    llm_config = NULL,
+                    min_log2fc = 1) {
   results_list <- list()
 
   # Create plot directory only if saving plots
@@ -545,7 +556,8 @@ ontoanno <- function(seurat_obj, resolutions, cl, graph,
       n_runs = n_runs,
       topgenenumber = topgenenumber,
       add_cl_prompt = add_cl_prompt,
-      llm_config = llm_config
+      llm_config = llm_config,
+      min_log2fc = min_log2fc
     )
 
     all_clusters <- unique(seurat_obj@meta.data[[col_name]])
@@ -589,7 +601,8 @@ gptanno <- function(seurat_obj, resolutions, cl, graph,
                     marker_dir = "output/marker_genes",
                     save_plots = FALSE,
                     plot_dir = "./output/prediction",
-                    llm_config = NULL) {
+                    llm_config = NULL,
+                    min_log2fc = 1) {
   .Deprecated("ontoanno", package = "OntoAnno")
   ontoanno(
     seurat_obj = seurat_obj,
@@ -605,7 +618,8 @@ gptanno <- function(seurat_obj, resolutions, cl, graph,
     marker_dir = marker_dir,
     save_plots = save_plots,
     plot_dir = plot_dir,
-    llm_config = llm_config
+    llm_config = llm_config,
+    min_log2fc = min_log2fc
   )
 }
 
