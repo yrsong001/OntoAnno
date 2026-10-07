@@ -46,7 +46,10 @@
 #' Routes prompts to OpenAI, Anthropic, Google Gemini, or local Ollama models via ellmer package.
 #'
 #' @param prompt Character. The prompt to send.
-#' @param provider Character. One of "openai", "anthropic", "gemini", "ollama", or "vllm".
+#' @param provider Character. One of "openai", "anthropic", "gemini", "ollama", "vllm",
+#'   "claude_cli" (Claude Code CLI in headless `-p` mode) or "codex_cli" (Codex CLI `exec` mode).
+#'   The two CLI providers need no API key or HTTP endpoint; they call the locally installed
+#'   official CLI, which uses its own login.
 #' @param model Character. Model name (e.g., "gpt-5.2", "claude-opus-4-6", "gemini-2.0-flash").
 #'   For Ollama, use model names like "llama2", "mistral", "neural-chat", etc.
 #' @param params An ellmer params object created by ellmer::params().
@@ -56,7 +59,8 @@
 #'   Gemini: GOOGLE_API_KEY or GEMINI_API_KEY
 #'   Ollama/vLLM: Not required (local)
 #' @param system_prompt Character. System prompt.
-#' @param api_url Character. API URL for local LLMs (Ollama or vLLM).
+#' @param api_url Character. API URL for local LLMs (Ollama or vLLM). For the CLI providers,
+#'   the path to the CLI binary (default: "claude" or "codex" found on PATH).
 #'   Ollama default: "http://localhost:11434"
 #'   vLLM default: "http://localhost:8000"
 #'
@@ -83,7 +87,7 @@ call_llm <- function(prompt, provider = "openai", model = NULL,
   if (!is.null(model) && provider == "ollama") {
     model <- sub(":.*$", "", model)
   }
-  if (!requireNamespace("ellmer", quietly = TRUE)) {
+  if (!provider %in% c("claude_cli", "codex_cli") && !requireNamespace("ellmer", quietly = TRUE)) {
     stop("Package 'ellmer' required but not installed")
   }
   # warn if provider uses API key and none provided
@@ -150,8 +154,51 @@ call_llm <- function(prompt, provider = "openai", model = NULL,
       base_url = api_url,
       echo = "none"
     )
+  } else if (provider %in% c("claude_cli", "codex_cli")) {
+    # Official headless modes of the Claude Code and Codex CLIs: no HTTP API, no key;
+    # the CLI's own login is used. `params` are ignored (the CLIs expose no sampling
+    # controls beyond what the CLI exposes: for these providers `params` is a character vector of
+    # extra CLI arguments, e.g. c("--effort", "high") or c("-c", "model_reasoning_effort=high"));
+    # `system_prompt` is passed via --append-system-prompt (claude) or
+    # prepended to the prompt (codex). The chat object mimics ellmer's `$chat()`.
+    bin <- if (!is.null(api_url)) api_url else if (provider == "claude_cli") "claude" else "codex"
+    if (!nzchar(Sys.which(bin)) && !file.exists(bin)) {
+      stop("CLI binary not found: ", bin, ". Pass its path via llm_config$api_url.")
+    }
+    chat <- list(chat = function(p) {
+      # Fresh, empty working directory for every call: headless `claude -p` auto-loads the
+      # CLAUDE.md and the per-directory auto-memory of its cwd (and `codex exec` reads
+      # AGENTS.md), so a call made from a project directory would see earlier project notes
+      # (e.g. previous annotations). An empty temp dir has neither; each call is independent.
+      wd <- tempfile("llm_cli_"); dir.create(wd); od <- setwd(wd)
+      on.exit({ setwd(od); unlink(wd, recursive = TRUE) }, add = TRUE)
+      if (provider == "claude_cli") {
+        args <- c("-p", "--output-format", "text", "--no-session-persistence")
+        if (!is.null(model)) args <- c(args, "--model", model)
+        if (!is.null(system_prompt)) args <- c(args, "--append-system-prompt", shQuote(system_prompt))
+        if (is.character(params)) args <- c(args, params)   # e.g. c("--effort", "high")
+        out <- withCallingHandlers(
+          system2(bin, args, input = p, stdout = TRUE, stderr = TRUE),
+          warning = function(w) invokeRestart("muffleWarning"))
+      } else {
+        outfile <- tempfile(fileext = ".txt")
+        on.exit(unlink(outfile), add = TRUE)
+        args <- c("exec", "--skip-git-repo-check", "-s", "read-only", "-o", outfile)
+        if (!is.null(model)) args <- c(args, "-m", model)
+        if (is.character(params)) args <- c(args, params)   # e.g. c("-c", "model_reasoning_effort=high")
+        full <- if (is.null(system_prompt)) p else paste(system_prompt, p, sep = "\n\n")
+        withCallingHandlers(
+          system2(bin, args, input = full, stdout = FALSE, stderr = FALSE),
+          warning = function(w) invokeRestart("muffleWarning"))
+        out <- if (file.exists(outfile)) readLines(outfile, warn = FALSE) else character()
+      }
+      status <- attr(out, "status")
+      if (!is.null(status) && status != 0) stop(provider, " exited with status ", status, ": ", paste(out, collapse = "\n"))
+      if (!length(out)) stop(provider, " returned no output")
+      paste(out, collapse = "\n")
+    })
   } else {
-    stop("Unknown provider: ", provider, ". Use 'openai', 'anthropic', 'gemini', 'ollama', or 'vllm'")
+    stop("Unknown provider: ", provider, ". Use 'openai', 'anthropic', 'gemini', 'ollama', 'vllm', 'claude_cli' or 'codex_cli'")
   }
 
   tryCatch({

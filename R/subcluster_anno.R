@@ -141,7 +141,11 @@ prepare_ontology_strategy <- function(cl,
 #' @param parent_marker_file Path to parent marker RDS file
 #' @param parent_celltype Character. Parent cell type name
 #' @param user_restrict_to Optional character vector. User-specified cell type restrictions
-#' @param topgenenumber Integer. Number of top genes from each source (default: 10)
+#' @param topgenenumber Integer. Number of top subcluster genes (default: 10)
+#' @param parent_topgenenumber Integer. Number of top parent-cluster genes (default: same as topgenenumber)
+#' @param min_log2fc Numeric or NULL. avg_log2FC a gene must exceed (default 1); NULL = no fold-change filter, genes taken in
+#'   FindAllMarkers order
+#' @param max_genes Integer or NULL. Cap on the combined (unique) gene list (default 20); NULL = no cap
 #'
 #' @return List with strategy configuration
 #' @export
@@ -157,7 +161,10 @@ prepare_ontology_strategy <- function(cl,
 prepare_marker_inheritance_strategy <- function(parent_marker_file,
                                                 parent_celltype,
                                                 user_restrict_to = NULL,
-                                                topgenenumber = 10) {
+                                                topgenenumber = 10,
+                                                parent_topgenenumber = topgenenumber,
+                                                min_log2fc = 1,
+                                                max_genes = 20) {
 
   if (!file.exists(parent_marker_file)) {
     stop("Parent marker file not found: ", parent_marker_file)
@@ -189,6 +196,9 @@ prepare_marker_inheritance_strategy <- function(parent_marker_file,
     tissue_context = NULL,
     parent_markers = parent_markers,  # Store for later use
     topgenenumber = topgenenumber,
+    parent_topgenenumber = parent_topgenenumber,
+    min_log2fc = min_log2fc,
+    max_genes = max_genes,
     marker_prep_fn = function(subcluster_markers,
                               subset_seurat,
                               subcluster_col,
@@ -200,7 +210,10 @@ prepare_marker_inheritance_strategy <- function(parent_marker_file,
         subset_seurat = subset_seurat,
         subcluster_col = subcluster_col,
         original_cluster_col = original_cluster_col,
-        topgenenumber = topgenenumber
+        topgenenumber = topgenenumber,
+        parent_topgenenumber = parent_topgenenumber,
+        min_log2fc = min_log2fc,
+        max_genes = max_genes
       )
     }
   )
@@ -214,7 +227,10 @@ combine_parent_subcluster_markers_internal <- function(parent_markers,
                                                        subset_seurat,
                                                        subcluster_col,
                                                        original_cluster_col,
-                                                       topgenenumber = 10) {
+                                                       topgenenumber = 10,
+                                                       parent_topgenenumber = topgenenumber,
+                                                       min_log2fc = 1,
+                                                       max_genes = 20) {
 
   # Get unique subclusters
   sub_ids <- unique(subset_seurat@meta.data[[subcluster_col]])
@@ -233,21 +249,21 @@ combine_parent_subcluster_markers_internal <- function(parent_markers,
     parent_clusters <- subset_seurat@meta.data[cells_in_subcluster, original_cluster_col]
     parent_cluster_mode <- as.numeric(names(sort(table(parent_clusters), decreasing = TRUE))[1])
 
-    # Get top genes from parent (filter by avg_log2FC > 1, keep original order)
+    # Get top genes from parent (optional avg_log2FC filter, keep original order = FindAllMarkers ranking)
     parent_top <- parent_markers %>%
-      dplyr::filter(cluster == parent_cluster_mode, avg_log2FC > 1) %>%
-      dplyr::slice(1:topgenenumber) %>%
+      dplyr::filter(cluster == parent_cluster_mode, if (is.null(min_log2fc)) TRUE else avg_log2FC > min_log2fc) %>%
+      dplyr::slice(seq_len(parent_topgenenumber)) %>%
       dplyr::pull(gene)
 
-    # Get top genes from subcluster (filter by avg_log2FC > 1, keep original order)
+    # Get top genes from subcluster (optional avg_log2FC filter, keep original order = FindAllMarkers ranking)
     sub_top <- subcluster_markers %>%
-      dplyr::filter(cluster == sub_id, avg_log2FC > 1) %>%
-      dplyr::slice(1:topgenenumber) %>%
+      dplyr::filter(cluster == sub_id, if (is.null(min_log2fc)) TRUE else avg_log2FC > min_log2fc) %>%
+      dplyr::slice(seq_len(topgenenumber)) %>%
       dplyr::pull(gene)
 
     # Combine, keeping unique, prioritizing subcluster markers
     combined <- unique(c(sub_top, parent_top))
-    combined <- utils::head(combined, 20)  # Max 20 genes
+    if (!is.null(max_genes)) combined <- utils::head(combined, max_genes)  # cap (default 20); NULL = keep all
 
     combined_list[[as.character(sub_id)]] <- paste(combined, collapse = ",")
   }
@@ -276,6 +292,7 @@ combine_parent_subcluster_markers_internal <- function(parent_markers,
 #' @param save_dir Optional directory to save results
 #' @param save_plots Logical. Save comparison plots? (default: TRUE)
 #' @param llm_config Optional list. LLM configuration forwarded to `summarize_gptcelltype()`.
+#' @param min_log2fc Numeric or NULL. Fold-change filter for data-frame marker input (default 1); NULL disables it.
 #'
 #' @return List with annotation results per resolution
 #' @importFrom Seurat Idents
@@ -294,7 +311,8 @@ annotate_subclusters <- function(seurat_obj,
                                  original_cluster_col = NULL,
                                  save_dir = NULL,
                                  save_plots = TRUE,
-                                 llm_config = NULL) {
+                                 llm_config = NULL,
+                                 min_log2fc = 1) {
 
   strategy <- strategy_config$strategy
   results_list <- list()
@@ -357,7 +375,8 @@ annotate_subclusters <- function(seurat_obj,
       add_cl_prompt = add_cl_prompt,
       restrict_to = strategy_config$restrict_to,
       parent_celltype = parent_celltype,
-      llm_config = llm_config
+      llm_config = llm_config,
+      min_log2fc = min_log2fc
     )
 
     # Add ontology distance if graph provided
@@ -633,6 +652,9 @@ subcluster_and_find_markers <- function(seurat_obj,
 #' @param celltypes_to_subcluster Optional character vector. Specific parent celltypes to process.
 #'   If NULL, processes all directories in base_dir. Overrides any celltype filtering.
 #' @param llm_config Optional list. LLM configuration forwarded to `annotate_subclusters()`.
+#' @param min_log2fc Numeric or NULL. Fold-change filter on markers (default 1); NULL disables it.
+#' @param parent_topgenenumber Integer or NULL. Parent-cluster genes for marker_inheritance (default: topgenenumber).
+#' @param max_genes Integer or NULL. Cap on the combined gene list for marker_inheritance (default 20); NULL = no cap.
 #'
 #' @return List with: results (all resolutions for all celltypes), scores, best, strategy
 #' @export
@@ -710,7 +732,10 @@ run_subcluster_annotation_workflow <- function(
     select_best = TRUE,
     output_dir = NULL,
     celltypes_to_subcluster = NULL,
-    llm_config = NULL) {
+    llm_config = NULL,
+    min_log2fc = 1,
+    parent_topgenenumber = NULL,
+    max_genes = 20) {
 
   strategy <- match.arg(strategy)
 
@@ -818,7 +843,11 @@ run_subcluster_annotation_workflow <- function(
       strategy_config <- prepare_marker_inheritance_strategy(
         parent_marker_file = parent_marker_file,
         parent_celltype = celltype,
-        user_restrict_to = celltype_restrict
+        user_restrict_to = celltype_restrict,
+        topgenenumber = topgenenumber,
+        parent_topgenenumber = if (is.null(parent_topgenenumber)) topgenenumber else parent_topgenenumber,
+        min_log2fc = min_log2fc,
+        max_genes = max_genes
       )
       original_cluster_col <- parent_cluster_col
     }
@@ -847,7 +876,8 @@ run_subcluster_annotation_workflow <- function(
       ontology_graph = ontology_graph,
       original_cluster_col = original_cluster_col,
       save_dir = celltype_save_dir,
-      llm_config = llm_config
+      llm_config = llm_config,
+      min_log2fc = min_log2fc
     )
 
     # Store ALL resolution results (like parent workflow)

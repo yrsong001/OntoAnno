@@ -181,15 +181,24 @@ score_annotation_resolutions <- function(annotation_result_list, output_csv = NU
     )
   }
 
+  n_mixed <- vapply(annotation_result_list, function(res) {
+    fs <- res$final_summary
+    if (!"flag" %in% colnames(fs)) fs <- flag_mixed_predictions(res)$final_summary
+    sum(!is.na(fs$flag) & fs$flag == "mixed-signal")
+  }, numeric(1))
   summary_table <- data.frame(
     resolution          = names(avg_path_length),
     avg_path_length     = avg_path_length,
     avg_max_percentage  = avg_max_perc,
     min_max_percentage  = min_max_perc,
     composite_score     = composite_score,
+    n_mixed_clusters    = n_mixed,
     row.names           = NULL
   ) |>
     dplyr::arrange(dplyr::desc(composite_score))
+  if (any(n_mixed > 0)) message("[OntoAnno] mixed-signal clusters per resolution: ",
+    paste(names(n_mixed), n_mixed, sep = " = ", collapse = ", "),
+    ". These clusters carried compound labels and should be checked (doublets / under-clustering) before the resolution is accepted.")
   if (!is.null(output_csv)) {
     utils::write.csv(summary_table, output_csv, row.names = FALSE)
     message("Score summary written to: ", output_csv)
